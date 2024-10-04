@@ -4,8 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import java.nio.file.*;
 import java.util.*;
 
 public class GenericFileToJsonConverter {
@@ -14,49 +13,51 @@ public class GenericFileToJsonConverter {
         String templatePath = "template.xlsx";
         String dataFilePath = "data.txt";
 
-        List<Map<String, String>> templateConfig = readTemplate(templatePath);
-        String data = new String(Files.readAllBytes(Paths.get(dataFilePath)));
+        List<TemplateField> templateConfig = readTemplate(templatePath);
+        List<String> dataLines = Files.readAllLines(Paths.get(dataFilePath));
 
-        List<Map<String, String>> parsedData = parseData(data, templateConfig);
+        List<Map<String, String>> parsedData = parseData(dataLines, templateConfig);
         JSONObject jsonObject = buildJson(parsedData, templateConfig);
 
         System.out.println(jsonObject.toString(4));
     }
 
+    // Using a record in Java 17 to model the template field
+    record TemplateField(String fieldName, int startPosition, int length, int maxOccurrence, String jsonPath, String dataType) {}
+
     // Read template configuration from Excel file
-    public static List<Map<String, String>> readTemplate(String templateFilePath) throws Exception {
-        List<Map<String, String>> templateConfig = new ArrayList<>();
+    public static List<TemplateField> readTemplate(String templateFilePath) throws Exception {
+        List<TemplateField> templateConfig = new ArrayList<>();
         try (FileInputStream fis = new FileInputStream(new File(templateFilePath));
              Workbook workbook = new XSSFWorkbook(fis)) {
 
             Sheet sheet = workbook.getSheetAt(0);
             for (int i = 1; i <= sheet.getLastRowNum(); i++) { // Skip header
                 Row row = sheet.getRow(i);
-                Map<String, String> fieldConfig = new HashMap<>();
-                fieldConfig.put("fieldName", row.getCell(0).getStringCellValue());
-                fieldConfig.put("startPosition", Integer.toString((int) row.getCell(1).getNumericCellValue()));
-                fieldConfig.put("length", Integer.toString((int) row.getCell(2).getNumericCellValue()));
-                fieldConfig.put("maxOccurrence", Integer.toString((int) row.getCell(3).getNumericCellValue()));
-                fieldConfig.put("jsonPath", row.getCell(4).getStringCellValue());
-                fieldConfig.put("dataType", row.getCell(5).getStringCellValue());
-                templateConfig.add(fieldConfig);
+                String fieldName = row.getCell(0).getStringCellValue();
+                int startPosition = (int) row.getCell(1).getNumericCellValue();
+                int length = (int) row.getCell(2).getNumericCellValue();
+                int maxOccurrence = (int) row.getCell(3).getNumericCellValue();
+                String jsonPath = row.getCell(4).getStringCellValue();
+                String dataType = row.getCell(5).getStringCellValue();
+
+                templateConfig.add(new TemplateField(fieldName, startPosition, length, maxOccurrence, jsonPath, dataType));
             }
         }
         return templateConfig;
     }
 
     // Parse data from the text file based on template configuration
-    public static List<Map<String, String>> parseData(String data, List<Map<String, String>> templateConfig) {
+    public static List<Map<String, String>> parseData(List<String> dataLines, List<TemplateField> templateConfig) {
         List<Map<String, String>> parsedData = new ArrayList<>();
-        String[] records = data.split("\n");
 
-        for (String record : records) {
+        for (String record : dataLines) {
             Map<String, String> fieldValues = new HashMap<>();
-            for (Map<String, String> config : templateConfig) {
-                int startPos = Integer.parseInt(config.get("startPosition"));
-                int length = Integer.parseInt(config.get("length"));
+            for (TemplateField field : templateConfig) {
+                int startPos = field.startPosition();
+                int length = field.length();
                 String fieldValue = record.substring(startPos, Math.min(startPos + length, record.length())).trim();
-                fieldValues.put(config.get("fieldName"), fieldValue);
+                fieldValues.put(field.fieldName(), fieldValue);
             }
             parsedData.add(fieldValues);
         }
@@ -64,18 +65,18 @@ public class GenericFileToJsonConverter {
     }
 
     // Build JSON structure based on parsed data and template configuration
-    public static JSONObject buildJson(List<Map<String, String>> parsedData, List<Map<String, String>> templateConfig) {
+    public static JSONObject buildJson(List<Map<String, String>> parsedData, List<TemplateField> templateConfig) {
         JSONArray requestList = new JSONArray();
 
         for (Map<String, String> record : parsedData) {
             JSONObject recordJson = new JSONObject();
             Map<String, JSONObject> jsonObjects = new HashMap<>();
 
-            for (Map<String, String> config : templateConfig) {
-                String fieldName = config.get("fieldName");
-                String jsonPath = config.get("jsonPath");
-                String dataType = config.get("dataType");
-                int maxOccurrence = Integer.parseInt(config.get("maxOccurrence"));
+            for (TemplateField field : templateConfig) {
+                String fieldName = field.fieldName();
+                String jsonPath = field.jsonPath();
+                String dataType = field.dataType();
+                int maxOccurrence = field.maxOccurrence();
 
                 Object value = castValue(record.get(fieldName), dataType);
 
@@ -117,15 +118,11 @@ public class GenericFileToJsonConverter {
 
     // Cast values according to their data type
     private static Object castValue(String value, String dataType) {
-        switch (dataType.toLowerCase()) {
-            case "int":
-                return Integer.parseInt(value);
-            case "double":
-                return Double.parseDouble(value);
-            case "date":
-                return value; // Assuming date is in an acceptable string format
-            default:
-                return value; // String by default
-        }
+        return switch (dataType.toLowerCase()) {
+            case "int" -> Integer.parseInt(value);
+            case "double" -> Double.parseDouble(value);
+            case "date" -> value; // Assuming date is in an acceptable string format
+            default -> value; // String by default
+        };
     }
 }
