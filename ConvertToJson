@@ -8,21 +8,22 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.*;
 
-public class FileToJsonConverter {
+public class GenericFileToJsonConverter {
 
     public static void main(String[] args) throws Exception {
         String templatePath = "template.xlsx";
         String dataFilePath = "data.txt";
-        
+
         List<Map<String, String>> templateConfig = readTemplate(templatePath);
         String data = new String(Files.readAllBytes(Paths.get(dataFilePath)));
-        
+
         List<Map<String, String>> parsedData = parseData(data, templateConfig);
         JSONObject jsonObject = buildJson(parsedData, templateConfig);
-        
+
         System.out.println(jsonObject.toString(4));
     }
 
+    // Read template configuration from Excel file
     public static List<Map<String, String>> readTemplate(String templateFilePath) throws Exception {
         List<Map<String, String>> templateConfig = new ArrayList<>();
         try (FileInputStream fis = new FileInputStream(new File(templateFilePath));
@@ -44,10 +45,11 @@ public class FileToJsonConverter {
         return templateConfig;
     }
 
+    // Parse data from the text file based on template configuration
     public static List<Map<String, String>> parseData(String data, List<Map<String, String>> templateConfig) {
         List<Map<String, String>> parsedData = new ArrayList<>();
         String[] records = data.split("\n");
-        
+
         for (String record : records) {
             Map<String, String> fieldValues = new HashMap<>();
             for (Map<String, String> config : templateConfig) {
@@ -61,60 +63,51 @@ public class FileToJsonConverter {
         return parsedData;
     }
 
+    // Build JSON structure based on parsed data and template configuration
     public static JSONObject buildJson(List<Map<String, String>> parsedData, List<Map<String, String>> templateConfig) {
         JSONArray requestList = new JSONArray();
-        
+
         for (Map<String, String> record : parsedData) {
-            JSONObject person = new JSONObject();
-            Map<String, JSONArray> contactListMap = new HashMap<>();
+            JSONObject recordJson = new JSONObject();
+            Map<String, JSONObject> jsonObjects = new HashMap<>();
 
             for (Map<String, String> config : templateConfig) {
                 String fieldName = config.get("fieldName");
                 String jsonPath = config.get("jsonPath");
                 String dataType = config.get("dataType");
                 int maxOccurrence = Integer.parseInt(config.get("maxOccurrence"));
-                
+
                 Object value = castValue(record.get(fieldName), dataType);
-                
-                if (jsonPath.contains("[*]")) {
-                    String[] pathParts = jsonPath.split("\\[\\*\\]");
-                    String listKey = pathParts[0].split("\\.")[1];
-                    
-                    if (!contactListMap.containsKey(listKey)) {
-                        contactListMap.put(listKey, new JSONArray());
-                    }
-                    
-                    JSONArray contactList = contactListMap.get(listKey);
-                    JSONObject contactObject = new JSONObject();
-                    
-                    if (jsonPath.endsWith("[]")) {
-                        JSONArray array = contactObject.optJSONArray(fieldName);
-                        if (array == null) {
-                            array = new JSONArray();
-                        }
-                        array.put(value);
-                        contactObject.put(fieldName, array);
-                    } else {
-                        contactObject.put(fieldName, value);
-                    }
 
-                    if (contactList.length() < maxOccurrence) {
-                        contactList.put(contactObject);
-                    }
-
-                    contactListMap.put(listKey, contactList);
+                // Handle fields that are directly in the root JSON (e.g., name, age)
+                if (!jsonPath.contains("[*]")) {
+                    recordJson.put(jsonPath, value);
                 } else {
-                    setJsonValueByPath(person, jsonPath, value);
+                    // Handle fields that need to be grouped into objects inside arrays
+                    String arrayKey = jsonPath.split("\\[\\*\\]")[0]; // Get the root path (e.g., contactList)
+                    String objectKey = jsonPath.substring(jsonPath.lastIndexOf(".") + 1); // Get the actual field name
+
+                    JSONObject jsonObject = jsonObjects.getOrDefault(arrayKey, new JSONObject());
+
+                    // Group email and phone in the same object
+                    if (arrayKey.equals("contactList") && (objectKey.equals("email") || objectKey.equals("phone"))) {
+                        jsonObject.put(objectKey, value);
+                    } else {
+                        JSONArray array = jsonObjects.containsKey(arrayKey) ? jsonObject.optJSONArray(objectKey) : new JSONArray();
+                        array.put(value);
+                        jsonObject.put(objectKey, array);
+                    }
+
+                    jsonObjects.put(arrayKey, jsonObject);
                 }
             }
 
-            for (Map.Entry<String, JSONArray> entry : contactListMap.entrySet()) {
-                person.put(entry.getKey(), entry.getValue());
+            // Add grouped objects to the main JSON object
+            for (Map.Entry<String, JSONObject> entry : jsonObjects.entrySet()) {
+                recordJson.put(entry.getKey(), entry.getValue());
             }
 
-            JSONObject personWrapper = new JSONObject();
-            personWrapper.put("person", person);
-            requestList.put(personWrapper);
+            requestList.put(recordJson);
         }
 
         JSONObject finalJson = new JSONObject();
@@ -122,18 +115,7 @@ public class FileToJsonConverter {
         return finalJson;
     }
 
-    private static void setJsonValueByPath(JSONObject json, String path, Object value) {
-        String[] parts = path.split("\\.");
-        JSONObject current = json;
-        for (int i = 0; i < parts.length - 1; i++) {
-            if (!current.has(parts[i])) {
-                current.put(parts[i], new JSONObject());
-            }
-            current = current.getJSONObject(parts[i]);
-        }
-        current.put(parts[parts.length - 1], value);
-    }
-
+    // Cast values according to their data type
     private static Object castValue(String value, String dataType) {
         switch (dataType.toLowerCase()) {
             case "int":
