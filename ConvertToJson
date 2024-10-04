@@ -1,0 +1,149 @@
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.*;
+
+public class FileToJsonConverter {
+
+    public static void main(String[] args) throws Exception {
+        String templatePath = "template.xlsx";
+        String dataFilePath = "data.txt";
+        
+        List<Map<String, String>> templateConfig = readTemplate(templatePath);
+        String data = new String(Files.readAllBytes(Paths.get(dataFilePath)));
+        
+        List<Map<String, String>> parsedData = parseData(data, templateConfig);
+        JSONObject jsonObject = buildJson(parsedData, templateConfig);
+        
+        System.out.println(jsonObject.toString(4));
+    }
+
+    public static List<Map<String, String>> readTemplate(String templateFilePath) throws Exception {
+        List<Map<String, String>> templateConfig = new ArrayList<>();
+        try (FileInputStream fis = new FileInputStream(new File(templateFilePath));
+             Workbook workbook = new XSSFWorkbook(fis)) {
+
+            Sheet sheet = workbook.getSheetAt(0);
+            for (int i = 1; i <= sheet.getLastRowNum(); i++) { // Skip header
+                Row row = sheet.getRow(i);
+                Map<String, String> fieldConfig = new HashMap<>();
+                fieldConfig.put("fieldName", row.getCell(0).getStringCellValue());
+                fieldConfig.put("startPosition", Integer.toString((int) row.getCell(1).getNumericCellValue()));
+                fieldConfig.put("length", Integer.toString((int) row.getCell(2).getNumericCellValue()));
+                fieldConfig.put("maxOccurrence", Integer.toString((int) row.getCell(3).getNumericCellValue()));
+                fieldConfig.put("jsonPath", row.getCell(4).getStringCellValue());
+                fieldConfig.put("dataType", row.getCell(5).getStringCellValue());
+                templateConfig.add(fieldConfig);
+            }
+        }
+        return templateConfig;
+    }
+
+    public static List<Map<String, String>> parseData(String data, List<Map<String, String>> templateConfig) {
+        List<Map<String, String>> parsedData = new ArrayList<>();
+        String[] records = data.split("\n");
+        
+        for (String record : records) {
+            Map<String, String> fieldValues = new HashMap<>();
+            for (Map<String, String> config : templateConfig) {
+                int startPos = Integer.parseInt(config.get("startPosition"));
+                int length = Integer.parseInt(config.get("length"));
+                String fieldValue = record.substring(startPos, Math.min(startPos + length, record.length())).trim();
+                fieldValues.put(config.get("fieldName"), fieldValue);
+            }
+            parsedData.add(fieldValues);
+        }
+        return parsedData;
+    }
+
+    public static JSONObject buildJson(List<Map<String, String>> parsedData, List<Map<String, String>> templateConfig) {
+        JSONArray requestList = new JSONArray();
+        
+        for (Map<String, String> record : parsedData) {
+            JSONObject person = new JSONObject();
+            Map<String, JSONArray> contactListMap = new HashMap<>();
+
+            for (Map<String, String> config : templateConfig) {
+                String fieldName = config.get("fieldName");
+                String jsonPath = config.get("jsonPath");
+                String dataType = config.get("dataType");
+                int maxOccurrence = Integer.parseInt(config.get("maxOccurrence"));
+                
+                Object value = castValue(record.get(fieldName), dataType);
+                
+                if (jsonPath.contains("[*]")) {
+                    String[] pathParts = jsonPath.split("\\[\\*\\]");
+                    String listKey = pathParts[0].split("\\.")[1];
+                    
+                    if (!contactListMap.containsKey(listKey)) {
+                        contactListMap.put(listKey, new JSONArray());
+                    }
+                    
+                    JSONArray contactList = contactListMap.get(listKey);
+                    JSONObject contactObject = new JSONObject();
+                    
+                    if (jsonPath.endsWith("[]")) {
+                        JSONArray array = contactObject.optJSONArray(fieldName);
+                        if (array == null) {
+                            array = new JSONArray();
+                        }
+                        array.put(value);
+                        contactObject.put(fieldName, array);
+                    } else {
+                        contactObject.put(fieldName, value);
+                    }
+
+                    if (contactList.length() < maxOccurrence) {
+                        contactList.put(contactObject);
+                    }
+
+                    contactListMap.put(listKey, contactList);
+                } else {
+                    setJsonValueByPath(person, jsonPath, value);
+                }
+            }
+
+            for (Map.Entry<String, JSONArray> entry : contactListMap.entrySet()) {
+                person.put(entry.getKey(), entry.getValue());
+            }
+
+            JSONObject personWrapper = new JSONObject();
+            personWrapper.put("person", person);
+            requestList.put(personWrapper);
+        }
+
+        JSONObject finalJson = new JSONObject();
+        finalJson.put("requestList", requestList);
+        return finalJson;
+    }
+
+    private static void setJsonValueByPath(JSONObject json, String path, Object value) {
+        String[] parts = path.split("\\.");
+        JSONObject current = json;
+        for (int i = 0; i < parts.length - 1; i++) {
+            if (!current.has(parts[i])) {
+                current.put(parts[i], new JSONObject());
+            }
+            current = current.getJSONObject(parts[i]);
+        }
+        current.put(parts[parts.length - 1], value);
+    }
+
+    private static Object castValue(String value, String dataType) {
+        switch (dataType.toLowerCase()) {
+            case "int":
+                return Integer.parseInt(value);
+            case "double":
+                return Double.parseDouble(value);
+            case "date":
+                return value; // Assuming date is in an acceptable string format
+            default:
+                return value; // String by default
+        }
+    }
+}
