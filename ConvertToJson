@@ -1,128 +1,145 @@
-import org.apache.poi.ss.usermodel.*;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.json.JSONArray;
-import org.json.JSONObject;
 
-import java.io.*;
-import java.nio.file.*;
-import java.util.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Iterator;
+import java.util.List;
 
-public class GenericFileToJsonConverter {
+public class FixedWidthTextToJsonConverter {
 
-    public static void main(String[] args) throws Exception {
-        String templatePath = "template.xlsx";
-        String dataFilePath = "data.txt";
+    public static void convertToJson(String textFilePath, String excelFilePath, String outputJsonPath) throws IOException {
+        // Read all the rows from the fixed-width text file
+        List<String> lines = Files.readAllLines(Paths.get(textFilePath));
 
-        List<TemplateField> templateConfig = readTemplate(templatePath);
-        List<String> dataLines = Files.readAllLines(Paths.get(dataFilePath));
+        // Read the Excel file
+        FileInputStream excelFile = new FileInputStream(new File(excelFilePath));
+        Workbook workbook = new XSSFWorkbook(excelFile);
+        Sheet sheet = workbook.getSheetAt(0); // Assuming the mapping is in the first sheet
 
-        List<Map<String, String>> parsedData = parseData(dataLines, templateConfig);
-        JSONObject jsonObject = buildJson(parsedData, templateConfig);
+        // Create an empty root JSON array (requestList)
+        ObjectMapper mapper = new ObjectMapper();
+        ArrayNode requestList = mapper.createArrayNode();
 
-        System.out.println(jsonObject.toString(4));
-    }
+        // Iterate through each line in the text file
+        for (String line : lines) {
+            ObjectNode rootNode = mapper.createObjectNode(); // Create a new object for each row
 
-    // Using a record in Java 17 to model the template field
-    record TemplateField(String fieldName, int startPosition, int length, int maxOccurrence, String jsonPath, String dataType) {}
+            // Iterate through each row in the Excel sheet to build the JSON structure for each text line
+            Iterator<Row> rowIterator = sheet.iterator();
+            while (rowIterator.hasNext()) {
+                Row row = rowIterator.next();
+                String fieldName = row.getCell(0).getStringCellValue(); // Field name, e.g., "person.name"
+                int startPos = (int) row.getCell(1).getNumericCellValue() - 1; // Start position (adjusting to 0-based index)
+                int length = (int) row.getCell(2).getNumericCellValue(); // Length of the field
+                int occurrence = (int) row.getCell(3).getNumericCellValue(); // Occurrence
 
-    // Read template configuration from Excel file
-    public static List<TemplateField> readTemplate(String templateFilePath) throws Exception {
-        List<TemplateField> templateConfig = new ArrayList<>();
-        try (FileInputStream fis = new FileInputStream(new File(templateFilePath));
-             Workbook workbook = new XSSFWorkbook(fis)) {
+                // Extract the text based on start position and length
+                String extractedValue = extractValue(line, startPos, length);
 
-            Sheet sheet = workbook.getSheetAt(0);
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) { // Skip header
-                Row row = sheet.getRow(i);
-                String fieldName = row.getCell(0).getStringCellValue();
-                int startPosition = (int) row.getCell(1).getNumericCellValue();
-                int length = (int) row.getCell(2).getNumericCellValue();
-                int maxOccurrence = (int) row.getCell(3).getNumericCellValue();
-                String jsonPath = row.getCell(4).getStringCellValue();
-                String dataType = row.getCell(5).getStringCellValue();
+                if (fieldName.contains("[]")) {
+                    // Handle arrays (e.g., "projects[].name" or "skills[]")
+                    String arrayFieldName = fieldName.substring(0, fieldName.indexOf("[]"));
+                    String childField = fieldName.substring(fieldName.indexOf("[]") + 3);
 
-                templateConfig.add(new TemplateField(fieldName, startPosition, length, maxOccurrence, jsonPath, dataType));
-            }
-        }
-        return templateConfig;
-    }
-
-    // Parse data from the text file based on template configuration
-    public static List<Map<String, String>> parseData(List<String> dataLines, List<TemplateField> templateConfig) {
-        List<Map<String, String>> parsedData = new ArrayList<>();
-
-        for (String record : dataLines) {
-            Map<String, String> fieldValues = new HashMap<>();
-            for (TemplateField field : templateConfig) {
-                int startPos = field.startPosition();
-                int length = field.length();
-                String fieldValue = record.substring(startPos, Math.min(startPos + length, record.length())).trim();
-                fieldValues.put(field.fieldName(), fieldValue);
-            }
-            parsedData.add(fieldValues);
-        }
-        return parsedData;
-    }
-
-    // Build JSON structure based on parsed data and template configuration
-    public static JSONObject buildJson(List<Map<String, String>> parsedData, List<TemplateField> templateConfig) {
-        JSONArray requestList = new JSONArray();
-
-        for (Map<String, String> record : parsedData) {
-            JSONObject recordJson = new JSONObject();
-            Map<String, JSONObject> jsonObjects = new HashMap<>();
-
-            for (TemplateField field : templateConfig) {
-                String fieldName = field.fieldName();
-                String jsonPath = field.jsonPath();
-                String dataType = field.dataType();
-                int maxOccurrence = field.maxOccurrence();
-
-                Object value = castValue(record.get(fieldName), dataType);
-
-                // Handle fields that are directly in the root JSON (e.g., name, age)
-                if (!jsonPath.contains("[*]")) {
-                    recordJson.put(jsonPath, value);
-                } else {
-                    // Handle fields that need to be grouped into objects inside arrays
-                    String arrayKey = jsonPath.split("\\[\\*\\]")[0]; // Get the root path (e.g., contactList)
-                    String objectKey = jsonPath.substring(jsonPath.lastIndexOf(".") + 1); // Get the actual field name
-
-                    JSONObject jsonObject = jsonObjects.getOrDefault(arrayKey, new JSONObject());
-
-                    // Group email and phone in the same object
-                    if (arrayKey.equals("contactList") && (objectKey.equals("email") || objectKey.equals("phone"))) {
-                        jsonObject.put(objectKey, value);
-                    } else {
-                        JSONArray array = jsonObjects.containsKey(arrayKey) ? jsonObject.optJSONArray(objectKey) : new JSONArray();
-                        array.put(value);
-                        jsonObject.put(objectKey, array);
+                    // Get or create the array node
+                    ArrayNode arrayNode = (ArrayNode) rootNode.get(arrayFieldName);
+                    if (arrayNode == null) {
+                        arrayNode = mapper.createArrayNode();
+                        rootNode.set(arrayFieldName, arrayNode);
                     }
 
-                    jsonObjects.put(arrayKey, jsonObject);
+                    // Insert value into the appropriate array element
+                    for (int i = 0; i < occurrence; i++) {
+                        // Get or create the element at index 'i' in the array
+                        ObjectNode itemNode;
+                        if (arrayNode.size() > i) {
+                            itemNode = (ObjectNode) arrayNode.get(i);
+                        } else {
+                            itemNode = mapper.createObjectNode();
+                            arrayNode.add(itemNode);
+                        }
+
+                        if (childField.isEmpty()) {
+                            // If there is no child field (e.g., "skills[]"), treat it as a simple value array
+                            arrayNode.set(i, mapper.convertValue(extractedValue.trim(), JsonNode.class));
+                        } else {
+                            // Otherwise, set the value in the child field (e.g., "projects[].name")
+                            itemNode.put(childField, extractedValue.trim());
+                        }
+
+                        // Update the start position for the next occurrence in the array
+                        startPos += length;
+                        extractedValue = extractValue(line, startPos, length); // Extract the next occurrence
+                    }
+                } else {
+                    // Handle regular fields (non-array)
+                    setNestedValue(rootNode, fieldName, extractedValue.trim());
                 }
             }
 
-            // Add grouped objects to the main JSON object
-            for (Map.Entry<String, JSONObject> entry : jsonObjects.entrySet()) {
-                recordJson.put(entry.getKey(), entry.getValue());
-            }
-
-            requestList.put(recordJson);
+            // Add the rootNode (current row object) to the requestList array
+            requestList.add(rootNode);
         }
 
-        JSONObject finalJson = new JSONObject();
-        finalJson.put("requestList", requestList);
-        return finalJson;
+        workbook.close();
+
+        // Create the final JSON structure with requestList
+        ObjectNode finalJson = mapper.createObjectNode();
+        finalJson.set("requestList", requestList);
+
+        // Write the output JSON to a file
+        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(outputJsonPath), finalJson);
+        System.out.println("JSON file generated successfully at: " + outputJsonPath);
     }
 
-    // Cast values according to their data type
-    private static Object castValue(String value, String dataType) {
-        return switch (dataType.toLowerCase()) {
-            case "int" -> Integer.parseInt(value);
-            case "double" -> Double.parseDouble(value);
-            case "date" -> value; // Assuming date is in an acceptable string format
-            default -> value; // String by default
-        };
+    // Helper function to extract a substring based on start position and length
+    private static String extractValue(String text, int startPos, int length) {
+        if (startPos >= text.length()) return ""; // Out of bounds
+        int endPos = Math.min(startPos + length, text.length());
+        return text.substring(startPos, endPos);
+    }
+
+    // Helper function to set values in nested JSON nodes using dot notation
+    private static void setNestedValue(ObjectNode node, String fieldName, String value) {
+        String[] fields = fieldName.split("\\.");
+        ObjectNode currentNode = node;
+
+        for (int i = 0; i < fields.length - 1; i++) {
+            String field = fields[i];
+            JsonNode childNode = currentNode.get(field);
+
+            // Create the node if it does not exist
+            if (childNode == null || !childNode.isObject()) {
+                childNode = currentNode.putObject(field);
+            }
+
+            // Traverse to the child node
+            currentNode = (ObjectNode) childNode;
+        }
+
+        // Set the value at the final field
+        currentNode.put(fields[fields.length - 1], value);
+    }
+
+    public static void main(String[] args) {
+        try {
+            String textFilePath = "output.txt";    // Path to your fixed-width text file
+            String excelFilePath = "mapping.xlsx"; // Path to your Excel mapping file
+            String outputJsonPath = "output.json"; // Path to your output JSON file
+
+            convertToJson(textFilePath, excelFilePath, outputJsonPath);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 }
