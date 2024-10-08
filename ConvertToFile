@@ -9,7 +9,6 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -45,51 +44,32 @@ public class JsonToSpaceSeparatedFile {
     private static String formatRow(JsonNode jsonNode, List<FieldMapping> mappings) {
         StringBuilder rowBuilder = new StringBuilder();
 
-        // Create a temporary list to hold the skill names and levels
-        List<String> skillNames = new ArrayList<>();
-        List<String> skillLevels = new ArrayList<>();
-
         for (FieldMapping mapping : mappings) {
-            Object value = JsonPath.read(jsonNode.toString(), mapping.getJsonPath());
+            try {
+                Object value = JsonPath.read(jsonNode.toString(), mapping.getJsonPath());
 
-            // Handle arrays and occurrences
-            if (value instanceof List) {
-                List<?> values = (List<?>) value;
-
-                // Check for skills specifically
-                if (mapping.getJsonPath().contains("skills")) {
-                    for (Object skill : values) {
-                        String skillName = JsonPath.read(skill.toString(), "$.name");
-                        String skillLevel = JsonPath.read(skill.toString(), "$.level");
-                        skillNames.add(skillName);
-                        skillLevels.add(skillLevel);
-                    }
-                } else {
-                    // Handle general list values (like hobbies)
+                // Handle arrays and occurrences
+                if (value instanceof List) {
+                    List<?> values = (List<?>) value;
                     for (int i = 0; i < mapping.getOccurrence(); i++) {
                         if (i < values.size()) {
                             rowBuilder.append(padOrTrim(values.get(i).toString(), mapping.getLength())).append(" ");
                         } else {
+                            // If fewer values than occurrence, pad with spaces
                             rowBuilder.append(padOrTrim("", mapping.getLength())).append(" ");
                         }
                     }
+                } else {
+                    // For non-array values, repeat the same value if multiple occurrences are specified
+                    for (int i = 0; i < mapping.getOccurrence(); i++) {
+                        rowBuilder.append(padOrTrim(value.toString(), mapping.getLength())).append(" ");
+                    }
                 }
-            } else {
-                // For non-array values, repeat the same value if multiple occurrences are specified
+            } catch (Exception e) {
+                // Handle missing fields by padding with spaces
                 for (int i = 0; i < mapping.getOccurrence(); i++) {
-                    rowBuilder.append(padOrTrim(value.toString(), mapping.getLength())).append(" ");
+                    rowBuilder.append(padOrTrim("", mapping.getLength())).append(" ");
                 }
-            }
-        }
-
-        // Now add the skills to the row
-        for (int i = 0; i < 3; i++) { // Assuming a maximum of 3 skills
-            if (i < skillNames.size()) {
-                rowBuilder.append(padOrTrim(skillNames.get(i), 30)).append(" ");
-                rowBuilder.append(padOrTrim(skillLevels.size() > i ? skillLevels.get(i) : "", 15)).append(" ");
-            } else {
-                rowBuilder.append(padOrTrim("", 30)).append(" "); // pad if less than 3
-                rowBuilder.append(padOrTrim("", 15)).append(" "); // pad if less than 3
             }
         }
 
