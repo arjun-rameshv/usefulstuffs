@@ -1,5 +1,6 @@
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jayway.jsonpath.JsonPath;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
@@ -9,116 +10,128 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 
-public class FixedWidthTextGenerator {
+public class JsonToSpaceSeparatedFile {
 
-    public static void generateFixedWidthText(String jsonFilePath, String excelFilePath, String outputFilePath) throws IOException {
-        // Read and parse the JSON file
+    public static void main(String[] args) throws Exception {
+        // Load mappings from Excel file
+        List<FieldMapping> mappings = readExcelMappingFile("mapping.xlsx");
+
+        // Example JSON file
+        String jsonFilePath = "input.json";
+
+        // Read and parse the JSON file (assumes the JSON contains a "response" list of objects)
         ObjectMapper mapper = new ObjectMapper();
-        JsonNode jsonNode = mapper.readTree(new File(jsonFilePath));
+        JsonNode rootNode = mapper.readTree(new File(jsonFilePath));
+        JsonNode responseNodes = rootNode.path("response"); // Get the "response" field, which is an array
 
-        // Read the Excel file
-        FileInputStream excelFile = new FileInputStream(new File(excelFilePath));
-        Workbook workbook = new XSSFWorkbook(excelFile);
-        Sheet sheet = workbook.getSheetAt(0); // Assuming the mapping is in the first sheet
+        // Output file
+        FileWriter writer = new FileWriter("output.txt");
 
-        // Buffer to hold the final text
-        StringBuilder finalText = new StringBuilder();
+        // Iterate over each object in the "response" list (each object represents a row)
+        for (JsonNode jsonNode : responseNodes) {
+            String row = formatRow(jsonNode, mappings);
+            writer.write(row + System.lineSeparator());
+        }
 
-        // Iterate through each row in the Excel sheet
-        Iterator<Row> rowIterator = sheet.iterator();
-        while (rowIterator.hasNext()) {
-            Row row = rowIterator.next();
-            String fieldName = row.getCell(0).getStringCellValue(); // Field name, e.g., "person.name"
-            int startPos = (int) row.getCell(1).getNumericCellValue() - 1; // Start position (adjusting to 0-based index)
-            int length = (int) row.getCell(2).getNumericCellValue(); // Length of the field
-            int occurrence = (int) row.getCell(3).getNumericCellValue(); // Occurrence
+        writer.close();
+        System.out.println("File generated: output.txt");
+    }
 
-            if (fieldName.contains("[]")) {
-                String arrayFieldName = fieldName.substring(0, fieldName.indexOf("[]"));
+    // Format a single row based on the mappings and JSON data
+    private static String formatRow(JsonNode jsonNode, List<FieldMapping> mappings) {
+        StringBuilder rowBuilder = new StringBuilder();
 
-                JsonNode arrayNode = jsonNode.path(arrayFieldName);
-                if (arrayNode.isArray()) {
-                    for (int i = 0; i < Math.min(occurrence, arrayNode.size()); i++) {
-                        JsonNode item = arrayNode.get(i);
+        // Create a temporary list to hold the skill names and levels
+        List<String> skillNames = new ArrayList<>();
+        List<String> skillLevels = new ArrayList<>();
 
-                        // For array of objects (like "projects[].name")
-                        if (item.isObject()) {
-                            String childField = fieldName.substring(fieldName.indexOf("[]") + 3);
-                            String value = getNestedValue(item, childField);
-                            value = formatValue(value, length);
-                            insertValueIntoBuffer(finalText, value, startPos);
+        for (FieldMapping mapping : mappings) {
+            Object value = JsonPath.read(jsonNode.toString(), mapping.getJsonPath());
+
+            // Handle arrays and occurrences
+            if (value instanceof List) {
+                List<?> values = (List<?>) value;
+
+                // Check for skills specifically
+                if (mapping.getJsonPath().contains("skills")) {
+                    for (Object skill : values) {
+                        String skillName = JsonPath.read(skill.toString(), "$.name");
+                        String skillLevel = JsonPath.read(skill.toString(), "$.level");
+                        skillNames.add(skillName);
+                        skillLevels.add(skillLevel);
+                    }
+                } else {
+                    // Handle general list values (like hobbies)
+                    for (int i = 0; i < mapping.getOccurrence(); i++) {
+                        if (i < values.size()) {
+                            rowBuilder.append(padOrTrim(values.get(i).toString(), mapping.getLength())).append(" ");
+                        } else {
+                            rowBuilder.append(padOrTrim("", mapping.getLength())).append(" ");
                         }
-                        // For array of simple values (like "skills[]")
-                        else if (item.isValueNode()) {
-                            String value = item.asText();
-                            value = formatValue(value, length);
-                            insertValueIntoBuffer(finalText, value, startPos);
-                        }
-
-                        // Move the start position forward for the next occurrence of the array field
-                        startPos += length;
                     }
                 }
             } else {
-                // Handle regular (non-array) fields
-                String value = getNestedValue(jsonNode, fieldName);
-                value = formatValue(value, length);
-                insertValueIntoBuffer(finalText, value, startPos);
+                // For non-array values, repeat the same value if multiple occurrences are specified
+                for (int i = 0; i < mapping.getOccurrence(); i++) {
+                    rowBuilder.append(padOrTrim(value.toString(), mapping.getLength())).append(" ");
+                }
             }
+        }
+
+        // Now add the skills to the row
+        for (int i = 0; i < 3; i++) { // Assuming a maximum of 3 skills
+            if (i < skillNames.size()) {
+                rowBuilder.append(padOrTrim(skillNames.get(i), 30)).append(" ");
+                rowBuilder.append(padOrTrim(skillLevels.size() > i ? skillLevels.get(i) : "", 15)).append(" ");
+            } else {
+                rowBuilder.append(padOrTrim("", 30)).append(" "); // pad if less than 3
+                rowBuilder.append(padOrTrim("", 15)).append(" "); // pad if less than 3
+            }
+        }
+
+        return rowBuilder.toString().trim();
+    }
+
+    // Pad or trim values to fit the required length
+    private static String padOrTrim(String value, int length) {
+        if (value.length() > length) {
+            return value.substring(0, length); // Trim if longer
+        } else {
+            return String.format("%-" + length + "s", value); // Pad with spaces
+        }
+    }
+
+    // Read the Excel mapping file
+    private static List<FieldMapping> readExcelMappingFile(String excelFilePath) throws Exception {
+        List<FieldMapping> mappings = new ArrayList<>();
+
+        FileInputStream fis = new FileInputStream(new File(excelFilePath));
+        Workbook workbook = new XSSFWorkbook(fis);
+        Sheet sheet = workbook.getSheetAt(0);
+
+        Iterator<Row> rowIterator = sheet.iterator();
+        rowIterator.next(); // Skip the header row
+
+        while (rowIterator.hasNext()) {
+            Row row = rowIterator.next();
+
+            String fieldName = row.getCell(0).getStringCellValue();
+            int startPosition = (int) row.getCell(1).getNumericCellValue();
+            int length = (int) row.getCell(2).getNumericCellValue();
+            int occurrence = (int) row.getCell(3).getNumericCellValue();
+            String jsonPath = row.getCell(4).getStringCellValue();
+
+            FieldMapping mapping = new FieldMapping(fieldName, startPosition, length, occurrence, jsonPath);
+            mappings.add(mapping);
         }
 
         workbook.close();
+        fis.close();
 
-        // Write to output file
-        try (FileWriter writer = new FileWriter(outputFilePath)) {
-            writer.write(finalText.toString());
-        }
-
-        System.out.println("Fixed-width text file generated successfully at: " + outputFilePath);
-    }
-
-    // Helper function to format the value based on length (padding or truncating)
-    private static String formatValue(String value, int length) {
-        if (value == null) value = "";  // Fallback if the field is missing in the JSON
-        return String.format("%-" + length + "s", value).substring(0, length);
-    }
-
-    // Helper function to retrieve values from nested JSON using dot notation
-    private static String getNestedValue(JsonNode node, String fieldName) {
-        String[] fields = fieldName.split("\\.");
-        JsonNode currentNode = node;
-
-        for (String field : fields) {
-            currentNode = currentNode.path(field);
-            if (currentNode.isMissingNode()) {
-                return null; // Return null if any part of the path is missing
-            }
-        }
-
-        return currentNode.isValueNode() ? currentNode.asText() : null; // Return value as text if it's a value node
-    }
-
-    // Helper function to insert the value into the final buffer at a specified start position
-    private static void insertValueIntoBuffer(StringBuilder finalText, String value, int startPos) {
-        if (finalText.length() < startPos) {
-            while (finalText.length() < startPos) {
-                finalText.append(" ");
-            }
-        }
-        finalText.insert(startPos, value);
-    }
-
-    public static void main(String[] args) {
-        try {
-            String jsonFilePath = "input.json";    // Path to your JSON file
-            String excelFilePath = "mapping.xlsx"; // Path to your Excel mapping file
-            String outputFilePath = "output.txt";  // Path to your output text file
-
-            generateFixedWidthText(jsonFilePath, excelFilePath, outputFilePath);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+        return mappings;
     }
 }
