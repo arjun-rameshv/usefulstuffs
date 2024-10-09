@@ -7,139 +7,195 @@ import org.apache.poi.ss.usermodel.Sheet;
 import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.Iterator;
-import java.util.List;
+import java.io.*;
+import java.util.*;
 
-public class FixedWidthTextToJsonConverter {
+public class SpaceSeparatedToJsonWithDataType {
 
-    public static void convertToJson(String textFilePath, String excelFilePath, String outputJsonPath) throws IOException {
-        // Read all the rows from the fixed-width text file
-        List<String> lines = Files.readAllLines(Paths.get(textFilePath));
+    public static void main(String[] args) throws Exception {
+        // Load mappings from Excel file
+        List<FieldMapping> mappings = readExcelMappingFile("mapping_with_datatype.xlsx");
 
-        // Read the Excel file
-        FileInputStream excelFile = new FileInputStream(new File(excelFilePath));
-        Workbook workbook = new XSSFWorkbook(excelFile);
-        Sheet sheet = workbook.getSheetAt(0); // Assuming the mapping is in the first sheet
+        // Space-separated input file
+        String spaceSeparatedFilePath = "input.txt";
 
-        // Create an empty root JSON array (requestList)
+        // JSON output file
+        String jsonOutputPath = "output.json";
+
+        // Read the space-separated file
+        List<Map<String, String>> parsedRows = readSpaceSeparatedFile(spaceSeparatedFilePath, mappings);
+
+        // Convert parsed rows to JSON
+        ArrayNode jsonArray = convertToJson(parsedRows, mappings);
+
+        // Write JSON to file
         ObjectMapper mapper = new ObjectMapper();
-        ArrayNode requestList = mapper.createArrayNode();
+        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(jsonOutputPath), jsonArray);
 
-        // Iterate through each line in the text file
-        for (String line : lines) {
-            ObjectNode rootNode = mapper.createObjectNode(); // Create a new object for each row
+        System.out.println("JSON generated: " + jsonOutputPath);
+    }
 
-            // Iterate through each row in the Excel sheet to build the JSON structure for each text line
-            Iterator<Row> rowIterator = sheet.iterator();
-            while (rowIterator.hasNext()) {
-                Row row = rowIterator.next();
-                String fieldName = row.getCell(0).getStringCellValue(); // Field name, e.g., "person.name"
-                int startPos = (int) row.getCell(1).getNumericCellValue() - 1; // Start position (adjusting to 0-based index)
-                int length = (int) row.getCell(2).getNumericCellValue(); // Length of the field
-                int occurrence = (int) row.getCell(3).getNumericCellValue(); // Occurrence
+    // Read and parse the space-separated file
+    private static List<Map<String, String>> readSpaceSeparatedFile(String filePath, List<FieldMapping> mappings) throws IOException {
+        List<Map<String, String>> rows = new ArrayList<>();
 
-                // Extract the text based on start position and length
-                String extractedValue = extractValue(line, startPos, length);
+        BufferedReader reader = new BufferedReader(new FileReader(filePath));
+        String line;
 
-                if (fieldName.contains("[]")) {
-                    // Handle arrays (e.g., "projects[].name" or "skills[]")
-                    String arrayFieldName = fieldName.substring(0, fieldName.indexOf("[]"));
-                    String childField = fieldName.substring(fieldName.indexOf("[]") + 3);
+        while ((line = reader.readLine()) != null) {
+            Map<String, String> row = new HashMap<>();
 
-                    // Get or create the array node
-                    ArrayNode arrayNode = (ArrayNode) rootNode.get(arrayFieldName);
-                    if (arrayNode == null) {
-                        arrayNode = mapper.createArrayNode();
-                        rootNode.set(arrayFieldName, arrayNode);
-                    }
+            for (FieldMapping mapping : mappings) {
+                int start = mapping.getStartPosition() - 1; // Start position is 1-based in Excel, convert to 0-based
+                int end = Math.min(start + mapping.getLength(), line.length());
 
-                    // Insert value into the appropriate array element
-                    for (int i = 0; i < occurrence; i++) {
-                        // Get or create the element at index 'i' in the array
-                        ObjectNode itemNode;
-                        if (arrayNode.size() > i) {
-                            itemNode = (ObjectNode) arrayNode.get(i);
-                        } else {
-                            itemNode = mapper.createObjectNode();
-                            arrayNode.add(itemNode);
-                        }
-
-                        if (childField.isEmpty()) {
-                            // If there is no child field (e.g., "skills[]"), treat it as a simple value array
-                            arrayNode.set(i, mapper.convertValue(extractedValue.trim(), JsonNode.class));
-                        } else {
-                            // Otherwise, set the value in the child field (e.g., "projects[].name")
-                            itemNode.put(childField, extractedValue.trim());
-                        }
-
-                        // Update the start position for the next occurrence in the array
-                        startPos += length;
-                        extractedValue = extractValue(line, startPos, length); // Extract the next occurrence
-                    }
-                } else {
-                    // Handle regular fields (non-array)
-                    setNestedValue(rootNode, fieldName, extractedValue.trim());
-                }
+                String fieldValue = line.substring(start, end).trim();
+                row.put(mapping.getFieldName(), fieldValue);
             }
 
-            // Add the rootNode (current row object) to the requestList array
-            requestList.add(rootNode);
+            rows.add(row);
+        }
+
+        reader.close();
+        return rows;
+    }
+
+    // Convert parsed rows to JSON using mappings
+    private static ArrayNode convertToJson(List<Map<String, String>> parsedRows, List<FieldMapping> mappings) {
+        ObjectMapper mapper = new ObjectMapper();
+        ArrayNode jsonArray = mapper.createArrayNode();
+
+        for (Map<String, String> parsedRow : parsedRows) {
+            ObjectNode rootObject = mapper.createObjectNode();
+
+            for (FieldMapping mapping : mappings) {
+                String value = parsedRow.get(mapping.getFieldName());
+
+                // Convert the value based on the data type
+                Object convertedValue = convertToDataType(value, mapping.getDataType());
+
+                // Use JSONPath to dynamically set the value in the corresponding JSON structure
+                setJsonValue(rootObject, mapping.getJsonPath(), convertedValue, mapping.getOccurrence());
+            }
+
+            jsonArray.add(rootObject);
+        }
+
+        return jsonArray;
+    }
+
+    // Convert string value to the specified data type
+    private static Object convertToDataType(String value, String dataType) {
+        switch (dataType.toLowerCase()) {
+            case "integer":
+                return Integer.parseInt(value);
+            case "double":
+                return Double.parseDouble(value);
+            case "boolean":
+                return Boolean.parseBoolean(value);
+            default: // Treat as string
+                return value;
+        }
+    }
+
+    // Dynamically set JSON values using the JSONPath
+    private static void setJsonValue(ObjectNode rootObject, String jsonPath, Object value, int occurrence) {
+        String[] pathParts = jsonPath.replace("$.", "").split("\\.");
+
+        ObjectNode currentNode = rootObject;
+
+        for (int i = 0; i < pathParts.length - 1; i++) {
+            String part = pathParts[i];
+            if (!currentNode.has(part)) {
+                currentNode.set(part, new ObjectNode(null));
+            }
+            currentNode = (ObjectNode) currentNode.get(part);
+        }
+
+        String lastPart = pathParts[pathParts.length - 1];
+        if (occurrence > 1) {
+            // Handle arrays with occurrences
+            if (!currentNode.has(lastPart)) {
+                currentNode.putArray(lastPart);
+            }
+            ArrayNode arrayNode = (ArrayNode) currentNode.get(lastPart);
+            arrayNode.addPOJO(value);
+        } else {
+            // Handle normal fields
+            currentNode.putPOJO(lastPart, value);
+        }
+    }
+
+    // Read the Excel mapping file
+    private static List<FieldMapping> readExcelMappingFile(String excelFilePath) throws Exception {
+        List<FieldMapping> mappings = new ArrayList<>();
+
+        FileInputStream fis = new FileInputStream(new File(excelFilePath));
+        Workbook workbook = new XSSFWorkbook(fis);
+        Sheet sheet = workbook.getSheetAt(0);
+
+        Iterator<Row> rowIterator = sheet.iterator();
+        rowIterator.next(); // Skip the header row
+
+        while (rowIterator.hasNext()) {
+            Row row = rowIterator.next();
+
+            String fieldName = row.getCell(0).getStringCellValue();
+            int startPosition = (int) row.getCell(1).getNumericCellValue();
+            int length = (int) row.getCell(2).getNumericCellValue();
+            int occurrence = (int) row.getCell(3).getNumericCellValue();
+            String jsonPath = row.getCell(4).getStringCellValue();
+            String dataType = row.getCell(5).getStringCellValue();
+
+            FieldMapping mapping = new FieldMapping(fieldName, startPosition, length, occurrence, jsonPath, dataType);
+            mappings.add(mapping);
         }
 
         workbook.close();
+        fis.close();
 
-        // Create the final JSON structure with requestList
-        ObjectNode finalJson = mapper.createObjectNode();
-        finalJson.set("requestList", requestList);
+        return mappings;
+    }
+}
 
-        // Write the output JSON to a file
-        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(outputJsonPath), finalJson);
-        System.out.println("JSON file generated successfully at: " + outputJsonPath);
+class FieldMapping {
+    private String fieldName;
+    private int startPosition;
+    private int length;
+    private int occurrence;
+    private String jsonPath;
+    private String dataType;
+
+    public FieldMapping(String fieldName, int startPosition, int length, int occurrence, String jsonPath, String dataType) {
+        this.fieldName = fieldName;
+        this.startPosition = startPosition;
+        this.length = length;
+        this.occurrence = occurrence;
+        this.jsonPath = jsonPath;
+        this.dataType = dataType;
     }
 
-    // Helper function to extract a substring based on start position and length
-    private static String extractValue(String text, int startPos, int length) {
-        if (startPos >= text.length()) return ""; // Out of bounds
-        int endPos = Math.min(startPos + length, text.length());
-        return text.substring(startPos, endPos);
+    public String getFieldName() {
+        return fieldName;
     }
 
-    // Helper function to set values in nested JSON nodes using dot notation
-    private static void setNestedValue(ObjectNode node, String fieldName, String value) {
-        String[] fields = fieldName.split("\\.");
-        ObjectNode currentNode = node;
-
-        for (int i = 0; i < fields.length - 1; i++) {
-            String field = fields[i];
-            JsonNode childNode = currentNode.get(field);
-
-            // Create the node if it does not exist
-            if (childNode == null || !childNode.isObject()) {
-                childNode = currentNode.putObject(field);
-            }
-
-            // Traverse to the child node
-            currentNode = (ObjectNode) childNode;
-        }
-
-        // Set the value at the final field
-        currentNode.put(fields[fields.length - 1], value);
+    public int getStartPosition() {
+        return startPosition;
     }
 
-    public static void main(String[] args) {
-        try {
-            String textFilePath = "output.txt";    // Path to your fixed-width text file
-            String excelFilePath = "mapping.xlsx"; // Path to your Excel mapping file
-            String outputJsonPath = "output.json"; // Path to your output JSON file
+    public int getLength() {
+        return length;
+    }
 
-            convertToJson(textFilePath, excelFilePath, outputJsonPath);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    public int getOccurrence() {
+        return occurrence;
+    }
+
+    public String getJsonPath() {
+        return jsonPath;
+    }
+
+    public String getDataType() {
+        return dataType;
     }
 }
