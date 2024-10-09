@@ -25,12 +25,12 @@ public class SpaceSeparatedToJsonWithDataType {
         // Read the space-separated file
         List<Map<String, List<String>>> parsedRows = readSpaceSeparatedFile(spaceSeparatedFilePath, mappings);
 
-        // Convert parsed rows to JSON
-        ArrayNode jsonArray = convertToJson(parsedRows, mappings);
+        // Convert parsed rows to JSON wrapped inside requestList
+        ArrayNode requestList = convertToRequestListJson(parsedRows, mappings);
 
         // Write JSON to file
         ObjectMapper mapper = new ObjectMapper();
-        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(jsonOutputPath), jsonArray);
+        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(jsonOutputPath), requestList);
 
         System.out.println("JSON generated: " + jsonOutputPath);
     }
@@ -60,13 +60,13 @@ public class SpaceSeparatedToJsonWithDataType {
         return rows;
     }
 
-    // Convert parsed rows to JSON using mappings
-    private static ArrayNode convertToJson(List<Map<String, List<String>>> parsedRows, List<FieldMapping> mappings) {
+    // Convert parsed rows to JSON using mappings and wrap in requestList
+    private static ArrayNode convertToRequestListJson(List<Map<String, List<String>>> parsedRows, List<FieldMapping> mappings) {
         ObjectMapper mapper = new ObjectMapper();
-        ArrayNode jsonArray = mapper.createArrayNode(); // Create an array to hold each row as a JSON object
+        ArrayNode requestList = mapper.createArrayNode(); // Create the root requestList array
 
         for (Map<String, List<String>> parsedRow : parsedRows) {
-            ObjectNode rootObject = mapper.createObjectNode(); // Create a root JSON object
+            ObjectNode rootObject = mapper.createObjectNode(); // Create a root JSON object for each row
 
             for (FieldMapping mapping : mappings) {
                 List<String> values = parsedRow.get(mapping.getFieldName());
@@ -80,16 +80,16 @@ public class SpaceSeparatedToJsonWithDataType {
                     for (String val : values) {
                         arrayNode.add(convertToDataType(val, mapping.getDataType()));
                     }
-                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), arrayNode, mapping.getOccurrence());
+                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), arrayNode, true);
                 } else {
-                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), value, mapping.getOccurrence());
+                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), value, false);
                 }
             }
 
-            jsonArray.add(rootObject); // Add the root object to the array
+            requestList.add(rootObject); // Add the root object to the requestList array
         }
 
-        return jsonArray;
+        return requestList;
     }
 
     // Convert string value to the specified data type
@@ -107,30 +107,32 @@ public class SpaceSeparatedToJsonWithDataType {
     }
 
     // Dynamically set JSON values using the JSONPath
-    private static void setJsonValue(ObjectMapper mapper, ObjectNode rootObject, String jsonPath, Object value, int occurrence) {
+    private static void setJsonValue(ObjectMapper mapper, ObjectNode rootObject, String jsonPath, Object value, boolean isArray) {
         String[] pathParts = jsonPath.replace("$.", "").split("\\.");
 
         ObjectNode currentNode = rootObject;
 
         for (int i = 0; i < pathParts.length - 1; i++) {
-            String part = pathParts[i];
+            String part = pathParts[i].replace("[*]", ""); // Remove array markers from intermediate path
+
             if (!currentNode.has(part)) {
-                currentNode.set(part, mapper.createObjectNode()); // Create a new object node using the ObjectMapper
+                currentNode.set(part, mapper.createObjectNode()); // Create a new object node if it doesn't exist
             }
             currentNode = (ObjectNode) currentNode.get(part);
         }
 
-        String lastPart = pathParts[pathParts.length - 1];
-        if (occurrence > 1) {
+        String lastPart = pathParts[pathParts.length - 1].replace("[*]", ""); // Handle array marker for the last element
+
+        if (isArray) {
             // Handle arrays with occurrences
             if (!currentNode.has(lastPart)) {
-                currentNode.set(lastPart, mapper.createArrayNode()); // Create an array node using the ObjectMapper
+                currentNode.set(lastPart, mapper.createArrayNode()); // Create an array node if it doesn't exist
             }
             ArrayNode arrayNode = (ArrayNode) currentNode.get(lastPart);
-            arrayNode.addPOJO(value);
+            arrayNode.addPOJO(value); // Add value to the array
         } else {
             // Handle normal fields
-            currentNode.putPOJO(lastPart, value);
+            currentNode.putPOJO(lastPart, value); // Add value as a simple field
         }
     }
 
