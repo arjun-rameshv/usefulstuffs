@@ -23,7 +23,7 @@ public class SpaceSeparatedToJsonWithDataType {
         String jsonOutputPath = "output.json";
 
         // Read the space-separated file
-        List<Map<String, String>> parsedRows = readSpaceSeparatedFile(spaceSeparatedFilePath, mappings);
+        List<Map<String, List<String>>> parsedRows = readSpaceSeparatedFile(spaceSeparatedFilePath, mappings);
 
         // Convert parsed rows to JSON
         ArrayNode jsonArray = convertToJson(parsedRows, mappings);
@@ -36,21 +36,21 @@ public class SpaceSeparatedToJsonWithDataType {
     }
 
     // Read and parse the space-separated file
-    private static List<Map<String, String>> readSpaceSeparatedFile(String filePath, List<FieldMapping> mappings) throws IOException {
-        List<Map<String, String>> rows = new ArrayList<>();
+    private static List<Map<String, List<String>>> readSpaceSeparatedFile(String filePath, List<FieldMapping> mappings) throws IOException {
+        List<Map<String, List<String>>> rows = new ArrayList<>();
 
         BufferedReader reader = new BufferedReader(new FileReader(filePath));
         String line;
 
         while ((line = reader.readLine()) != null) {
-            Map<String, String> row = new HashMap<>();
+            Map<String, List<String>> row = new HashMap<>();
 
             for (FieldMapping mapping : mappings) {
                 int start = mapping.getStartPosition() - 1; // Start position is 1-based in Excel, convert to 0-based
                 int end = Math.min(start + mapping.getLength(), line.length());
 
                 String fieldValue = line.substring(start, end).trim();
-                row.put(mapping.getFieldName(), fieldValue);
+                row.computeIfAbsent(mapping.getFieldName(), k -> new ArrayList<>()).add(fieldValue);
             }
 
             rows.add(row);
@@ -61,21 +61,29 @@ public class SpaceSeparatedToJsonWithDataType {
     }
 
     // Convert parsed rows to JSON using mappings
-    private static ArrayNode convertToJson(List<Map<String, String>> parsedRows, List<FieldMapping> mappings) {
+    private static ArrayNode convertToJson(List<Map<String, List<String>>> parsedRows, List<FieldMapping> mappings) {
         ObjectMapper mapper = new ObjectMapper();
         ArrayNode jsonArray = mapper.createArrayNode(); // Create an array to hold each row as a JSON object
 
-        for (Map<String, String> parsedRow : parsedRows) {
+        for (Map<String, List<String>> parsedRow : parsedRows) {
             ObjectNode rootObject = mapper.createObjectNode(); // Create a root JSON object
 
             for (FieldMapping mapping : mappings) {
-                String value = parsedRow.get(mapping.getFieldName());
+                List<String> values = parsedRow.get(mapping.getFieldName());
 
                 // Convert the value based on the data type
-                Object convertedValue = convertToDataType(value, mapping.getDataType());
+                Object value = convertToDataType(values.get(0), mapping.getDataType());
 
-                // Use JSONPath to dynamically set the value in the corresponding JSON structure
-                setJsonValue(mapper, rootObject, mapping.getJsonPath(), convertedValue, mapping.getOccurrence());
+                // If the field has multiple occurrences, handle it as an array
+                if (mapping.getOccurrence() > 1) {
+                    ArrayNode arrayNode = mapper.createArrayNode();
+                    for (String val : values) {
+                        arrayNode.add(convertToDataType(val, mapping.getDataType()));
+                    }
+                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), arrayNode, mapping.getOccurrence());
+                } else {
+                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), value, mapping.getOccurrence());
+                }
             }
 
             jsonArray.add(rootObject); // Add the root object to the array
