@@ -63,10 +63,10 @@ public class SpaceSeparatedToJsonWithDataType {
     // Convert parsed rows to JSON using mappings
     private static ArrayNode convertToJson(List<Map<String, String>> parsedRows, List<FieldMapping> mappings) {
         ObjectMapper mapper = new ObjectMapper();
-        ArrayNode jsonArray = mapper.createArrayNode();
+        ArrayNode jsonArray = mapper.createArrayNode(); // Create an array to hold each row as a JSON object
 
         for (Map<String, String> parsedRow : parsedRows) {
-            ObjectNode rootObject = mapper.createObjectNode();
+            ObjectNode rootObject = mapper.createObjectNode(); // Create a root JSON object
 
             for (FieldMapping mapping : mappings) {
                 String value = parsedRow.get(mapping.getFieldName());
@@ -75,10 +75,10 @@ public class SpaceSeparatedToJsonWithDataType {
                 Object convertedValue = convertToDataType(value, mapping.getDataType());
 
                 // Use JSONPath to dynamically set the value in the corresponding JSON structure
-                setJsonValue(rootObject, mapping.getJsonPath(), convertedValue, mapping.getOccurrence());
+                setJsonValue(mapper, rootObject, mapping.getJsonPath(), convertedValue, mapping.getOccurrence());
             }
 
-            jsonArray.add(rootObject);
+            jsonArray.add(rootObject); // Add the root object to the array
         }
 
         return jsonArray;
@@ -99,7 +99,7 @@ public class SpaceSeparatedToJsonWithDataType {
     }
 
     // Dynamically set JSON values using the JSONPath
-    private static void setJsonValue(ObjectNode rootObject, String jsonPath, Object value, int occurrence) {
+    private static void setJsonValue(ObjectMapper mapper, ObjectNode rootObject, String jsonPath, Object value, int occurrence) {
         String[] pathParts = jsonPath.replace("$.", "").split("\\.");
 
         ObjectNode currentNode = rootObject;
@@ -107,7 +107,7 @@ public class SpaceSeparatedToJsonWithDataType {
         for (int i = 0; i < pathParts.length - 1; i++) {
             String part = pathParts[i];
             if (!currentNode.has(part)) {
-                currentNode.set(part, new ObjectNode(null));
+                currentNode.set(part, mapper.createObjectNode()); // Create a new object node using the ObjectMapper
             }
             currentNode = (ObjectNode) currentNode.get(part);
         }
@@ -116,7 +116,7 @@ public class SpaceSeparatedToJsonWithDataType {
         if (occurrence > 1) {
             // Handle arrays with occurrences
             if (!currentNode.has(lastPart)) {
-                currentNode.putArray(lastPart);
+                currentNode.set(lastPart, mapper.createArrayNode()); // Create an array node using the ObjectMapper
             }
             ArrayNode arrayNode = (ArrayNode) currentNode.get(lastPart);
             arrayNode.addPOJO(value);
