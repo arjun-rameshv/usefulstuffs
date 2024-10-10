@@ -1,211 +1,90 @@
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
+import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.io.*;
 import java.util.*;
 
-public class SpaceSeparatedToJsonWithDataType {
-
+public class GenericTextToJsonConverter {
     public static void main(String[] args) throws Exception {
-        // Load mappings from Excel file
-        List<FieldMapping> mappings = readExcelMappingFile("mapping_with_datatype.xlsx");
+        String textFilePath = "data.txt";  // Path to your space-separated text file
+        String excelFilePath = "mapping.xlsx";  // Path to your Excel mapping file
+        List<ObjectNode> jsonList = new ArrayList<>();
 
-        // Space-separated input file
-        String spaceSeparatedFilePath = "input.txt";
+        // Read the mapping from the Excel file
+        List<Map<String, String>> mappings = readMappingFromExcel(excelFilePath);
 
-        // JSON output file
-        String jsonOutputPath = "output.json";
+        // Read the text file and convert to JSON
+        try (BufferedReader br = new BufferedReader(new FileReader(textFilePath))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                String[] values = line.split(" ");
+                ObjectNode jsonMap = new ObjectMapper().createObjectNode();
 
-        // Read the space-separated file
-        List<Map<String, List<String>>> parsedRows = readSpaceSeparatedFile(spaceSeparatedFilePath, mappings);
+                // Fill in the JSON structure based on mappings
+                for (Map<String, String> mapping : mappings) {
+                    String fieldName = mapping.get("fieldName");
+                    int startPos = Integer.parseInt(mapping.get("startPosition"));
+                    int length = Integer.parseInt(mapping.get("length"));
+                    int maxOccurrence = Integer.parseInt(mapping.get("maxOccurrence"));
 
-        // Convert parsed rows to JSON wrapped inside requestList
-        ArrayNode requestList = convertToRequestListJson(parsedRows, mappings);
-
-        // Write JSON to file
-        ObjectMapper mapper = new ObjectMapper();
-        mapper.writerWithDefaultPrettyPrinter().writeValue(new File(jsonOutputPath), requestList);
-
-        System.out.println("JSON generated: " + jsonOutputPath);
-    }
-
-    // Read and parse the space-separated file
-    private static List<Map<String, List<String>>> readSpaceSeparatedFile(String filePath, List<FieldMapping> mappings) throws IOException {
-        List<Map<String, List<String>>> rows = new ArrayList<>();
-
-        BufferedReader reader = new BufferedReader(new FileReader(filePath));
-        String line;
-
-        while ((line = reader.readLine()) != null) {
-            Map<String, List<String>> row = new HashMap<>();
-
-            for (FieldMapping mapping : mappings) {
-                int start = mapping.getStartPosition() - 1; // Start position is 1-based in Excel, convert to 0-based
-                int end = Math.min(start + mapping.getLength(), line.length());
-
-                String fieldValue = line.substring(start, end).trim();
-                row.computeIfAbsent(mapping.getFieldName(), k -> new ArrayList<>()).add(fieldValue);
-            }
-
-            rows.add(row);
-        }
-
-        reader.close();
-        return rows;
-    }
-
-    // Convert parsed rows to JSON using mappings and wrap in requestList
-    private static ArrayNode convertToRequestListJson(List<Map<String, List<String>>> parsedRows, List<FieldMapping> mappings) {
-        ObjectMapper mapper = new ObjectMapper();
-        ArrayNode requestList = mapper.createArrayNode(); // Create the root requestList array
-
-        for (Map<String, List<String>> parsedRow : parsedRows) {
-            ObjectNode rootObject = mapper.createObjectNode(); // Create a root JSON object for each row
-
-            for (FieldMapping mapping : mappings) {
-                List<String> values = parsedRow.get(mapping.getFieldName());
-
-                // Convert the value based on the data type
-                Object value = convertToDataType(values.get(0), mapping.getDataType());
-
-                // If the field has multiple occurrences, handle it as an array
-                if (mapping.getOccurrence() > 1) {
-                    ArrayNode arrayNode = mapper.createArrayNode();
-                    for (String val : values) {
-                        arrayNode.add(convertToDataType(val, mapping.getDataType()));
+                    // Handle multiple occurrences for arrays
+                    if (maxOccurrence > 1) {
+                        ArrayNode arrayNode = jsonMap.putArray(fieldName);
+                        for (int i = 0; i < maxOccurrence; i++) {
+                            if (startPos + i * length < values.length) {
+                                ObjectNode itemNode = new ObjectMapper().createObjectNode();
+                                for (int j = 0; j < length; j++) {
+                                    if (startPos + i * length + j < values.length) {
+                                        itemNode.put("item" + j, values[startPos + i * length + j].trim());
+                                    }
+                                }
+                                arrayNode.add(itemNode);
+                            }
+                        }
+                    } else if (startPos < values.length) {
+                        switch (mapping.get("dataType")) {
+                            case "String":
+                                jsonMap.put(fieldName, values[startPos].trim());
+                                break;
+                            case "Integer":
+                                jsonMap.put(fieldName, Integer.parseInt(values[startPos].trim()));
+                                break;
+                            case "Double":
+                                jsonMap.put(fieldName, Double.parseDouble(values[startPos].trim()));
+                                break;
+                        }
                     }
-                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), arrayNode, true);
-                } else {
-                    setJsonValue(mapper, rootObject, mapping.getJsonPath(), value, false);
                 }
+                jsonList.add(jsonMap);
             }
-
-            requestList.add(rootObject); // Add the root object to the requestList array
         }
 
-        return requestList;
+        // Convert list to JSON and write to file
+        ObjectMapper mapper = new ObjectMapper();
+        mapper.writeValue(new File("output.json"), jsonList);
     }
 
-    // Convert string value to the specified data type
-    private static Object convertToDataType(String value, String dataType) {
-        switch (dataType.toLowerCase()) {
-            case "integer":
-                return Integer.parseInt(value);
-            case "double":
-                return Double.parseDouble(value);
-            case "boolean":
-                return Boolean.parseBoolean(value);
-            default: // Treat as string
-                return value;
-        }
-    }
+    private static List<Map<String, String>> readMappingFromExcel(String excelFilePath) throws IOException {
+        List<Map<String, String>> mappings = new ArrayList<>();
+        try (FileInputStream excelFile = new FileInputStream(new File(excelFilePath));
+             Workbook workbook = new XSSFWorkbook(excelFile)) {
 
-    // Dynamically set JSON values using the JSONPath
-    private static void setJsonValue(ObjectMapper mapper, ObjectNode rootObject, String jsonPath, Object value, boolean isArray) {
-        String[] pathParts = jsonPath.replace("$.", "").split("\\.");
-
-        ObjectNode currentNode = rootObject;
-
-        for (int i = 0; i < pathParts.length - 1; i++) {
-            String part = pathParts[i].replace("[*]", ""); // Remove array markers from intermediate path
-
-            if (!currentNode.has(part)) {
-                currentNode.set(part, mapper.createObjectNode()); // Create a new object node if it doesn't exist
+            Sheet sheet = workbook.getSheetAt(0);
+            for (Row row : sheet) {
+                if (row.getRowNum() == 0) continue; // Skip header row
+                Map<String, String> map = new HashMap<>();
+                map.put("fieldName", row.getCell(0).getStringCellValue());
+                map.put("startPosition", String.valueOf((int) row.getCell(1).getNumericCellValue()));
+                map.put("length", String.valueOf((int) row.getCell(2).getNumericCellValue()));
+                map.put("maxOccurrence", String.valueOf((int) row.getCell(3).getNumericCellValue()));
+                map.put("jsonPath", row.getCell(4).getStringCellValue());
+                map.put("dataType", row.getCell(5).getStringCellValue());
+                mappings.add(map);
             }
-            currentNode = (ObjectNode) currentNode.get(part);
         }
-
-        String lastPart = pathParts[pathParts.length - 1].replace("[*]", ""); // Handle array marker for the last element
-
-        if (isArray) {
-            // Handle arrays with occurrences
-            if (!currentNode.has(lastPart)) {
-                currentNode.set(lastPart, mapper.createArrayNode()); // Create an array node if it doesn't exist
-            }
-            ArrayNode arrayNode = (ArrayNode) currentNode.get(lastPart);
-            arrayNode.addPOJO(value); // Add value to the array
-        } else {
-            // Handle normal fields
-            currentNode.putPOJO(lastPart, value); // Add value as a simple field
-        }
-    }
-
-    // Read the Excel mapping file
-    private static List<FieldMapping> readExcelMappingFile(String excelFilePath) throws Exception {
-        List<FieldMapping> mappings = new ArrayList<>();
-
-        FileInputStream fis = new FileInputStream(new File(excelFilePath));
-        Workbook workbook = new XSSFWorkbook(fis);
-        Sheet sheet = workbook.getSheetAt(0);
-
-        Iterator<Row> rowIterator = sheet.iterator();
-        rowIterator.next(); // Skip the header row
-
-        while (rowIterator.hasNext()) {
-            Row row = rowIterator.next();
-
-            String fieldName = row.getCell(0).getStringCellValue();
-            int startPosition = (int) row.getCell(1).getNumericCellValue();
-            int length = (int) row.getCell(2).getNumericCellValue();
-            int occurrence = (int) row.getCell(3).getNumericCellValue();
-            String jsonPath = row.getCell(4).getStringCellValue();
-            String dataType = row.getCell(5).getStringCellValue();
-
-            FieldMapping mapping = new FieldMapping(fieldName, startPosition, length, occurrence, jsonPath, dataType);
-            mappings.add(mapping);
-        }
-
-        workbook.close();
-        fis.close();
-
         return mappings;
-    }
-}
-
-class FieldMapping {
-    private String fieldName;
-    private int startPosition;
-    private int length;
-    private int occurrence;
-    private String jsonPath;
-    private String dataType;
-
-    public FieldMapping(String fieldName, int startPosition, int length, int occurrence, String jsonPath, String dataType) {
-        this.fieldName = fieldName;
-        this.startPosition = startPosition;
-        this.length = length;
-        this.occurrence = occurrence;
-        this.jsonPath = jsonPath;
-        this.dataType = dataType;
-    }
-
-    public String getFieldName() {
-        return fieldName;
-    }
-
-    public int getStartPosition() {
-        return startPosition;
-    }
-
-    public int getLength() {
-        return length;
-    }
-
-    public int getOccurrence() {
-        return occurrence;
-    }
-
-    public String getJsonPath() {
-        return jsonPath;
-    }
-
-    public String getDataType() {
-        return dataType;
     }
 }
