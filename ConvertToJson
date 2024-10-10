@@ -25,14 +25,14 @@ public class GenericTextToJsonConverter {
 
                 // Fill in the JSON structure based on mappings
                 for (Map<String, String> mapping : mappings) {
-                    String fieldName = mapping.get("fieldName");
+                    String jsonPath = mapping.get("jsonPath");
                     int startPos = Integer.parseInt(mapping.get("startPosition"));
                     int length = Integer.parseInt(mapping.get("length"));
                     int maxOccurrence = Integer.parseInt(mapping.get("maxOccurrence"));
 
                     // Handle multiple occurrences for arrays
-                    if (maxOccurrence > 1) {
-                        ArrayNode arrayNode = jsonMap.putArray(fieldName);
+                    if (maxOccurrence > 1 && jsonPath.contains("[]")) {
+                        ArrayNode arrayNode = jsonMap.withArray(jsonPath.replace("[]", ""));
                         for (int i = 0; i < maxOccurrence; i++) {
                             if (startPos + i * length < values.length) {
                                 ObjectNode itemNode = new ObjectMapper().createObjectNode();
@@ -47,13 +47,13 @@ public class GenericTextToJsonConverter {
                     } else if (startPos < values.length) {
                         switch (mapping.get("dataType")) {
                             case "String":
-                                jsonMap.put(fieldName, values[startPos].trim());
+                                jsonMap.put(jsonPath, values[startPos].trim());
                                 break;
                             case "Integer":
-                                jsonMap.put(fieldName, Integer.parseInt(values[startPos].trim()));
+                                jsonMap.put(jsonPath, Integer.parseInt(values[startPos].trim()));
                                 break;
                             case "Double":
-                                jsonMap.put(fieldName, Double.parseDouble(values[startPos].trim()));
+                                jsonMap.put(jsonPath, Double.parseDouble(values[startPos].trim()));
                                 break;
                         }
                     }
@@ -62,9 +62,11 @@ public class GenericTextToJsonConverter {
             }
         }
 
-        // Convert list to JSON and write to file
+        // Wrap in a "request" array and write to file
         ObjectMapper mapper = new ObjectMapper();
-        mapper.writeValue(new File("output.json"), jsonList);
+        ObjectNode rootNode = mapper.createObjectNode();
+        rootNode.set("request", mapper.valueToTree(jsonList));
+        mapper.writeValue(new File("output.json"), rootNode);
     }
 
     private static List<Map<String, String>> readMappingFromExcel(String excelFilePath) throws IOException {
