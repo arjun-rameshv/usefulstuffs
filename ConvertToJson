@@ -1,92 +1,177 @@
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-
-import java.io.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.*;
 
-public class GenericTextToJsonConverter {
+public class TextToJsonConverter {
+
     public static void main(String[] args) throws Exception {
-        String textFilePath = "data.txt";  // Path to your space-separated text file
-        String excelFilePath = "mapping.xlsx";  // Path to your Excel mapping file
-        List<ObjectNode> jsonList = new ArrayList<>();
+        // Define the path to the text file and mapping information (this would typically be read from Excel)
+        String textFilePath = "data.txt";
+        
+        // Mock mapping info, usually extracted from an Excel file
+        Map<String, MappingInfo> mappings = new HashMap<>();
+        mappings.put("orderId", new MappingInfo(0, 5, 1, "orders[].orderId", "integer", false));
+        mappings.put("customerName", new MappingInfo(6, 10, 1, "orders[].customer.name", "string", false));
+        mappings.put("productId", new MappingInfo(17, 5, 2, "orders[].items[].productId", "integer", true));
+        mappings.put("productName", new MappingInfo(23, 10, 2, "orders[].items[].productName", "string", true));
+        mappings.put("itemQuantity", new MappingInfo(34, 2, 2, "orders[].items[].quantity", "integer", true));
+        mappings.put("tags", new MappingInfo(37, 5, 3, "orders[].tags[]", "string", false));
 
-        // Read the mapping from the Excel file
-        List<Map<String, String>> mappings = readMappingFromExcel(excelFilePath);
+        // Parse the text file and convert it to JSON
+        Map<String, Object> jsonResult = parseTextFile(textFilePath, mappings);
 
-        // Read the text file and convert to JSON
-        try (BufferedReader br = new BufferedReader(new FileReader(textFilePath))) {
-            String line;
-            while ((line = br.readLine()) != null) {
-                String[] values = line.split(" ");
-                ObjectNode jsonMap = new ObjectMapper().createObjectNode();
-
-                // Fill in the JSON structure based on mappings
-                for (Map<String, String> mapping : mappings) {
-                    String jsonPath = mapping.get("jsonPath");
-                    int startPos = Integer.parseInt(mapping.get("startPosition"));
-                    int length = Integer.parseInt(mapping.get("length"));
-                    int maxOccurrence = Integer.parseInt(mapping.get("maxOccurrence"));
-
-                    // Handle multiple occurrences for arrays
-                    if (maxOccurrence > 1 && jsonPath.contains("[]")) {
-                        ArrayNode arrayNode = jsonMap.withArray(jsonPath.replace("[]", ""));
-                        for (int i = 0; i < maxOccurrence; i++) {
-                            if (startPos + i * length < values.length) {
-                                ObjectNode itemNode = new ObjectMapper().createObjectNode();
-                                for (int j = 0; j < length; j++) {
-                                    if (startPos + i * length + j < values.length) {
-                                        itemNode.put("item" + j, values[startPos + i * length + j].trim());
-                                    }
-                                }
-                                arrayNode.add(itemNode);
-                            }
-                        }
-                    } else if (startPos < values.length) {
-                        switch (mapping.get("dataType")) {
-                            case "String":
-                                jsonMap.put(jsonPath, values[startPos].trim());
-                                break;
-                            case "Integer":
-                                jsonMap.put(jsonPath, Integer.parseInt(values[startPos].trim()));
-                                break;
-                            case "Double":
-                                jsonMap.put(jsonPath, Double.parseDouble(values[startPos].trim()));
-                                break;
-                        }
-                    }
-                }
-                jsonList.add(jsonMap);
-            }
-        }
-
-        // Wrap in a "request" array and write to file
-        ObjectMapper mapper = new ObjectMapper();
-        ObjectNode rootNode = mapper.createObjectNode();
-        rootNode.set("request", mapper.valueToTree(jsonList));
-        mapper.writeValue(new File("output.json"), rootNode);
+        // Print out the final JSON-like structure
+        System.out.println(jsonResult);
     }
 
-    private static List<Map<String, String>> readMappingFromExcel(String excelFilePath) throws IOException {
-        List<Map<String, String>> mappings = new ArrayList<>();
-        try (FileInputStream excelFile = new FileInputStream(new File(excelFilePath));
-             Workbook workbook = new XSSFWorkbook(excelFile)) {
+    private static Map<String, Object> parseTextFile(String textFilePath, Map<String, MappingInfo> mappings) throws IOException {
+        Map<String, Object> jsonMap = new HashMap<>();
+        List<Object> mainList = new ArrayList<>();
 
-            Sheet sheet = workbook.getSheetAt(0);
-            for (Row row : sheet) {
-                if (row.getRowNum() == 0) continue; // Skip header row
-                Map<String, String> map = new HashMap<>();
-                map.put("fieldName", row.getCell(0).getStringCellValue());
-                map.put("startPosition", String.valueOf((int) row.getCell(1).getNumericCellValue()));
-                map.put("length", String.valueOf((int) row.getCell(2).getNumericCellValue()));
-                map.put("maxOccurrence", String.valueOf((int) row.getCell(3).getNumericCellValue()));
-                map.put("jsonPath", row.getCell(4).getStringCellValue());
-                map.put("dataType", row.getCell(5).getStringCellValue());
-                mappings.add(map);
+        // Read the content of the text file
+        String content = new String(Files.readAllBytes(Paths.get(textFilePath))).trim();
+        
+        // Calculate the length of one object (total fields length in one record)
+        int objectLength = calculateTotalLengthOfOneObject(mappings);
+        int totalObjects = content.length() / objectLength;
+
+        // Loop through the text content and extract each object
+        for (int i = 0; i < totalObjects; i++) {
+            int objectStart = i * objectLength;
+            String objectContent = content.substring(objectStart, Math.min(objectStart + objectLength, content.length())).trim();
+            Map<String, Object> objectMap = parseSingleObject(objectContent, mappings);
+            mainList.add(objectMap);
+        }
+
+        // Add the main list to the JSON structure
+        jsonMap.put("orders", mainList);
+        return jsonMap;
+    }
+
+    private static Map<String, Object> parseSingleObject(String objectContent, Map<String, MappingInfo> mappings) throws Exception {
+        Map<String, Object> objectMap = new HashMap<>();
+
+        for (MappingInfo info : mappings.values()) {
+            if (info.isArray()) {
+                handleArrayOfValues(objectMap, info, objectContent);
+            } else {
+                int start = info.getStartPosition();
+                int end = start + info.getLength();
+                if (end > objectContent.length()) break;
+
+                String extractedValue = objectContent.substring(start, end).trim();
+                Object value = convertToDataType(extractedValue, info.getDataType());
+
+                // Assign the value to the correct path inside the object
+                assignValueToJsonPath(objectMap, info.getJsonPath(), value);
             }
         }
-        return mappings;
+
+        return objectMap;
+    }
+
+    private static void handleArrayOfValues(Map<String, Object> jsonMap, MappingInfo info, String content) {
+        List<Object> valuesArray = new ArrayList<>();
+        for (int i = 0; i < info.getMaxOccurrence(); i++) {
+            int start = info.getStartPosition() + (i * info.getLength());
+            int end = start + info.getLength();
+            if (end > content.length()) break;
+
+            String extractedValue = content.substring(start, end).trim();
+            Object value = convertToDataType(extractedValue, info.getDataType());
+            valuesArray.add(value);
+        }
+
+        // Assign the array of values to the correct path
+        assignValueToJsonPath(jsonMap, info.getJsonPath(), valuesArray);
+    }
+
+    private static void assignValueToJsonPath(Map<String, Object> jsonMap, String jsonPath, Object value) {
+        String[] pathParts = jsonPath.split("\\.");
+        Map<String, Object> current = jsonMap;
+
+        for (int i = 0; i < pathParts.length; i++) {
+            String part = pathParts[i];
+
+            if (part.endsWith("[]")) {
+                String arrayFieldName = part.replace("[]", "");
+                current.computeIfAbsent(arrayFieldName, k -> new ArrayList<>());
+                List<Object> array = (List<Object>) current.get(arrayFieldName);
+
+                if (i == pathParts.length - 1) {
+                    array.add(value);
+                } else {
+                    if (array.isEmpty() || !(array.get(array.size() - 1) instanceof Map)) {
+                        array.add(new HashMap<String, Object>());
+                    }
+                    current = (Map<String, Object>) array.get(array.size() - 1);
+                }
+            } else {
+                if (i == pathParts.length - 1) {
+                    current.put(part, value);
+                } else {
+                    current.computeIfAbsent(part, k -> new HashMap<String, Object>());
+                    current = (Map<String, Object>) current.get(part);
+                }
+            }
+        }
+    }
+
+    private static Object convertToDataType(String extractedValue, String dataType) {
+        switch (dataType) {
+            case "integer":
+                return Integer.parseInt(extractedValue);
+            case "string":
+                return extractedValue;
+            default:
+                return extractedValue;  // Default to string if unknown data type
+        }
+    }
+
+    private static int calculateTotalLengthOfOneObject(Map<String, MappingInfo> mappings) {
+        return mappings.values().stream().mapToInt(MappingInfo::getLength).sum();
+    }
+
+    static class MappingInfo {
+        private int startPosition;
+        private int length;
+        private int maxOccurrence;
+        private String jsonPath;
+        private String dataType;
+        private boolean isArray;
+
+        public MappingInfo(int startPosition, int length, int maxOccurrence, String jsonPath, String dataType, boolean isArray) {
+            this.startPosition = startPosition;
+            this.length = length;
+            this.maxOccurrence = maxOccurrence;
+            this.jsonPath = jsonPath;
+            this.dataType = dataType;
+            this.isArray = isArray;
+        }
+
+        public int getStartPosition() {
+            return startPosition;
+        }
+
+        public int getLength() {
+            return length;
+        }
+
+        public int getMaxOccurrence() {
+            return maxOccurrence;
+        }
+
+        public String getJsonPath() {
+            return jsonPath;
+        }
+
+        public String getDataType() {
+            return dataType;
+        }
+
+        public boolean isArray() {
+            return isArray;
+        }
     }
 }
